@@ -1929,11 +1929,57 @@ async function executeStep5(state) {
   });
 }
 
+async function refreshOAuthIfTimedOutBeforeStep6(state) {
+  if (!state.vpsUrl) {
+    return state;
+  }
+
+  await addLog('Step 6: Checking CPA Auth status before login...');
+
+  try {
+    await reuseOrCreateTab('vps-panel', state.vpsUrl, {
+      inject: ['content/utils.js', 'content/vps-panel.js'],
+      injectSource: 'vps-panel',
+    });
+
+    const response = await sendToContentScript('vps-panel', {
+      type: 'CHECK_OAUTH_TIMEOUT_STATUS',
+      source: 'background',
+    });
+
+    if (response?.error) {
+      throw new Error(response.error);
+    }
+
+    if (!response?.timedOut) {
+      return state;
+    }
+
+    const timeoutText = response.statusText || '认证失败: Timeout waiting for OAuth callback';
+    await addLog(`Step 6: CPA Auth reported OAuth timeout. Refreshing OAuth link... (${timeoutText})`, 'warn');
+
+    await executeStepAndWait(1, 1500);
+
+    const refreshedState = await getState();
+    if (!refreshedState.oauthUrl) {
+      throw new Error('Step 1 completed but no new OAuth URL was saved.');
+    }
+
+    await addLog('Step 6: New OAuth link obtained after timeout. Continuing login...', 'ok');
+    return refreshedState;
+  } catch (err) {
+    await addLog(`Step 6: CPA Auth timeout check could not be completed, continuing with current OAuth URL. ${getErrorMessage(err)}`, 'warn');
+    return state;
+  }
+}
+
 // ============================================================
 // Step 6: Login ChatGPT (Background opens tab, chatgpt.js handles login)
 // ============================================================
 
 async function executeStep6(state) {
+  state = await refreshOAuthIfTimedOutBeforeStep6(state);
+
   if (!state.oauthUrl) {
     throw new Error('No OAuth URL. Complete step 1 first.');
   }

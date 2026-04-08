@@ -42,6 +42,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
     return true;
   }
+
+  if (message.type === 'CHECK_OAUTH_TIMEOUT_STATUS') {
+    resetStopState();
+    Promise.resolve()
+      .then(() => checkOauthTimeoutStatus())
+      .then(result => sendResponse({ ok: true, ...result }))
+      .catch(err => {
+        if (isStopError(err)) {
+          sendResponse({ stopped: true, error: err.message });
+          return;
+        }
+        sendResponse({ error: err.message });
+      });
+    return true;
+  }
 });
 
 async function handleStep(step, payload) {
@@ -51,6 +66,26 @@ async function handleStep(step, payload) {
     default:
       throw new Error(`vps-panel.js does not handle step ${step}`);
   }
+}
+
+function checkOauthTimeoutStatus() {
+  const statusEl = document.querySelector('.status-badge, [class*="status"]');
+  const statusText = (statusEl?.textContent || '').replace(/\s+/g, ' ').trim();
+  const timedOut = /timeout waiting for oauth callback/i.test(statusText);
+
+  if (timedOut) {
+    log(`CPA Auth status indicates OAuth timeout: ${statusText}`, 'warn');
+  } else if (statusText) {
+    log(`CPA Auth current status: ${statusText}`);
+  } else {
+    log('CPA Auth current status: no status badge found yet.');
+  }
+
+  return {
+    timedOut,
+    statusText,
+    url: location.href,
+  };
 }
 
 // ============================================================
