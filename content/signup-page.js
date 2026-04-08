@@ -5,7 +5,7 @@ console.log('[MultiPage:signup-page] Content script loaded on', location.href);
 
 // Listen for commands from Background
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === 'EXECUTE_STEP' || message.type === 'FILL_CODE' || message.type === 'STEP8_FIND_AND_CLICK' || message.type === 'WAIT_FOR_SURFACE' || message.type === 'RESEND_VERIFICATION_CODE') {
+  if (message.type === 'EXECUTE_STEP' || message.type === 'FILL_CODE' || message.type === 'STEP8_FIND_AND_CLICK' || message.type === 'WAIT_FOR_SURFACE' || message.type === 'RESEND_VERIFICATION_CODE' || message.type === 'DETECT_AUTH_STAGE') {
     resetStopState();
     handleCommand(message).then((result) => {
       sendResponse({ ok: true, ...(result || {}) });
@@ -55,6 +55,8 @@ async function handleCommand(message) {
       return await waitForSurfacePayload(message.payload);
     case 'RESEND_VERIFICATION_CODE':
       return await resendVerificationCode(message.step, message.payload);
+    case 'DETECT_AUTH_STAGE':
+      return await detectAuthStage(message.payload);
   }
 }
 
@@ -124,6 +126,166 @@ async function waitForSurfacePayload(payload = {}) {
     url: location.href,
     minReadyState,
   };
+}
+
+async function detectAuthStage(payload = {}) {
+  const rawTimeout = Number(payload?.timeout);
+  const timeout = Number.isFinite(rawTimeout) && rawTimeout >= 0 ? rawTimeout : 2500;
+
+  await waitForDocumentReady('interactive', Math.min(Math.max(timeout, 1000), 5000)).catch(() => {});
+
+  const startedAt = Date.now();
+  let latest = getCurrentAuthStage();
+  while (Date.now() - startedAt < timeout) {
+    throwIfStopped();
+    latest = getCurrentAuthStage();
+    if (latest.stage !== 'unknown') {
+      log(`Auth stage detected: ${latest.stage} (${latest.reason})`);
+      return latest;
+    }
+    await sleep(120);
+  }
+
+  return latest;
+}
+
+function getCurrentAuthStage() {
+  const step5ProfileSurface = findStep5ProfileSurface();
+  if (step5ProfileSurface) {
+    return {
+      stage: 'step5-profile',
+      reason: step5ProfileSurface,
+      url: location.href,
+    };
+  }
+
+  const passwordInput = findVisiblePasswordInput();
+  if (passwordInput) {
+    return {
+      stage: 'step6-login',
+      reason: 'password-input',
+      url: location.href,
+    };
+  }
+
+  const emailInput = findVisibleElement(
+    'input[type="email"], input[name="email"], input[name="username"], input[id*="email"], input[placeholder*="email" i], input[placeholder*="Email"]'
+  );
+  if (emailInput) {
+    return {
+      stage: 'step6-login',
+      reason: 'email-input',
+      url: location.href,
+    };
+  }
+
+  if (hasVisibleVerificationCodeInputs()) {
+    return {
+      stage: 'step7-otp',
+      reason: 'verification-code-input',
+      url: location.href,
+    };
+  }
+
+  const consentUrlMatched = isCodexConsentUrl(location.href);
+  const consentButton = consentUrlMatched ? findVisibleConsentButton() : null;
+  if (consentButton) {
+    return {
+      stage: 'step8-consent',
+      reason: 'oauth-consent-url+button',
+      buttonText: (consentButton.textContent || '').trim(),
+      url: location.href,
+    };
+  }
+
+  return {
+    stage: 'unknown',
+    reason: 'no-known-surface',
+    url: location.href,
+  };
+}
+
+function findStep5ProfileSurface() {
+  const nameInput = findVisibleElement(
+    'input[name="name"], input[placeholder*="全名"], input[autocomplete="name"]'
+  );
+  if (!nameInput) {
+    return null;
+  }
+
+  const ageInput = findVisibleElement('input[name="age"]');
+  if (ageInput) {
+    return 'step5-age-input';
+  }
+
+  const yearSpinner = findVisibleElement('[role="spinbutton"][data-type="year"]');
+  const monthSpinner = findVisibleElement('[role="spinbutton"][data-type="month"]');
+  const daySpinner = findVisibleElement('[role="spinbutton"][data-type="day"]');
+  if (yearSpinner && monthSpinner && daySpinner) {
+    return 'step5-birthday-spinbuttons';
+  }
+
+  if (document.querySelector('input[name="birthday"]')) {
+    return 'step5-hidden-birthday';
+  }
+
+  return null;
+}
+
+function findVisibleElement(selector) {
+  const elements = document.querySelectorAll(selector);
+  for (const el of elements) {
+    if (isElementVisible(el)) {
+      return el;
+    }
+  }
+  return null;
+}
+
+function isCodexConsentUrl(rawUrl = location.href) {
+  try {
+    const parsed = new URL(rawUrl, location.origin);
+    const normalizedPath = parsed.pathname
+      .toLowerCase()
+      .replace(/\/{2,}/g, '/');
+    return normalizedPath.includes('sign-in-with-chatgpt/codex/consent');
+  } catch {
+    return String(rawUrl || '')
+      .toLowerCase()
+      .includes('sign-in-with-chatgpt/codex/consent');
+  }
+}
+
+function hasVisibleVerificationCodeInputs() {
+  const combinedInput = findVisibleElement(
+    'input[name="code"], input[name="otp"], input[type="text"][maxlength="6"], input[aria-label*="code"], input[placeholder*="code"], input[placeholder*="Code"], input[inputmode="numeric"]'
+  );
+  if (combinedInput) {
+    return true;
+  }
+
+  const singleInputs = [...document.querySelectorAll('input[maxlength="1"]')].filter(isElementVisible);
+  return singleInputs.length >= 6;
+}
+
+function findVisibleConsentButton() {
+  const directMatch = findVisibleElement(
+    'button[type="submit"][data-dd-action-name="Continue"], button[type="submit"]._primary_3rdp0_107'
+  );
+  if (directMatch) {
+    return directMatch;
+  }
+
+  const candidates = document.querySelectorAll('button, [role="button"]');
+  for (const candidate of candidates) {
+    if (!isElementVisible(candidate)) continue;
+    const text = (candidate.textContent || '').trim();
+    if (/^(继续|Continue)$/i.test(text)) {
+      return candidate;
+    }
+  }
+
+  return null;
 }
 
 // ============================================================
@@ -432,6 +594,9 @@ function isElementVisible(el) {
 
 async function step8_findAndClick() {
   await ensureAuthSurfaceReady(8);
+  if (!isCodexConsentUrl(location.href)) {
+    throw new Error(`Current URL is not the expected Codex OAuth consent page. URL: ${location.href}`);
+  }
   log('Step 8: Looking for OAuth consent "继续" button...');
 
   const continueBtn = await findContinueButton();

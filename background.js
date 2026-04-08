@@ -1589,6 +1589,142 @@ async function waitForSignupSurface(payload, timeout = 20000) {
   throw new Error(`Signup page surface wait failed: ${getErrorMessage(lastError)}`);
 }
 
+async function detectSignupAuthStage(timeout = 2500) {
+  const tabId = await getTabId('signup-page');
+  if (!tabId) {
+    return {
+      stage: 'unavailable',
+      reason: 'signup-tab-missing',
+    };
+  }
+
+  try {
+    const response = await sendToTabWithRetry(tabId, {
+      type: 'DETECT_AUTH_STAGE',
+      source: 'background',
+      payload: { timeout },
+    }, {
+      timeoutMs: timeout + 1500,
+      intervalMs: 200,
+    });
+
+    if (response?.error) {
+      throw new Error(response.error);
+    }
+
+    return response || {
+      stage: 'unknown',
+      reason: 'empty-response',
+    };
+  } catch (err) {
+    return {
+      stage: 'unknown',
+      reason: 'detect-failed',
+      error: getErrorMessage(err),
+    };
+  }
+}
+
+async function waitForStableAuthStageAfterStep5(options = {}) {
+  const {
+    settleDelayMs = 1200,
+    totalTimeoutMs = 10000,
+    detectTimeoutMs = 1500,
+    pollIntervalMs = 250,
+  } = options;
+
+  if (settleDelayMs > 0) {
+    await addLog(`Step 6: Waiting ${Math.round(settleDelayMs / 100) / 10}s for the post-step-5 page transition to settle...`, 'info');
+    await sleepWithStop(settleDelayMs);
+  }
+
+  const startedAt = Date.now();
+  let lastAuthStage = {
+    stage: 'unknown',
+    reason: 'not-started',
+  };
+
+  while (Date.now() - startedAt < totalTimeoutMs) {
+    lastAuthStage = await detectSignupAuthStage(detectTimeoutMs);
+
+    if (['step6-login', 'step7-otp', 'step8-consent'].includes(lastAuthStage.stage)) {
+      return lastAuthStage;
+    }
+
+    await sleepWithStop(pollIntervalMs);
+  }
+
+  return lastAuthStage;
+}
+
+async function maybeShortCircuitStep6FromCurrentPage() {
+  const inspectionWindowMs = 10000;
+  const authStage = await waitForStableAuthStageAfterStep5({
+    settleDelayMs: 1400,
+    totalTimeoutMs: inspectionWindowMs,
+    detectTimeoutMs: 1800,
+    pollIntervalMs: 250,
+  });
+
+  if (authStage.stage === 'step8-consent') {
+    await addLog(`Step 6: Detected OAuth consent page directly after step 5 (${authStage.url || 'unknown URL'}). Skipping step 6 and step 7.`, 'warn');
+
+    const currentState = await getState();
+    const step7Status = currentState.stepStatuses?.[7];
+    if (step7Status !== 'completed' && step7Status !== 'skipped') {
+      await setStepStatus(7, 'skipped');
+      await addLog('Step 7: Skipped because the current page is already ready for step 8.', 'warn');
+    }
+
+    await setStepStatus(6, 'skipped');
+    notifyStepComplete(6, {
+      skipped: true,
+      autoSkipped: true,
+      reason: 'already-at-step-8',
+      authStage,
+    });
+    return true;
+  }
+
+  if (authStage.stage === 'step7-otp') {
+    await addLog(`Step 6: Detected login verification page directly after step 5 (${authStage.url || 'unknown URL'}). Skipping step 6 and continuing with step 7.`, 'warn');
+    await setStepStatus(6, 'skipped');
+    notifyStepComplete(6, {
+      skipped: true,
+      autoSkipped: true,
+      reason: 'already-at-step-7',
+      authStage,
+    });
+    return true;
+  }
+
+  if (authStage.stage === 'step6-login') {
+    await addLog(`Step 6: Login surface detected after step 5 (${authStage.reason}). Proceeding normally.`, 'info');
+    return false;
+  }
+
+  await addLog(`Step 6: No downstream auth surface was confirmed after step 5 within ${Math.round(inspectionWindowMs / 1000)}s. Proceeding with normal login flow.`, 'warn');
+  return false;
+}
+
+async function maybeSkipStep7IfConsentReady() {
+  await sleepWithStop(800);
+  const authStage = await detectSignupAuthStage(4000);
+  if (authStage.stage !== 'step8-consent') {
+    return false;
+  }
+
+  await addLog(`Step 7: Detected OAuth consent page (${authStage.url || 'unknown URL'}). Skipping login verification code.`, 'warn');
+  await setStepStatus(7, 'skipped');
+  notifyStepComplete(7, {
+    skipped: true,
+    autoSkipped: true,
+    reason: 'already-at-step-8',
+    authStage,
+  });
+  return true;
+}
+
 function getAutoResumeStep(state) {
   const statuses = state?.stepStatuses || {};
 
@@ -2214,6 +2350,10 @@ async function refreshOAuthIfTimedOutBeforeStep6(state) {
 // ============================================================
 
 async function executeStep6(state) {
+  if (await maybeShortCircuitStep6FromCurrentPage()) {
+    return;
+  }
+
   state = await refreshOAuthIfTimedOutBeforeStep6(state);
 
   if (!state.oauthUrl) {
@@ -2252,6 +2392,10 @@ async function executeStep6(state) {
 // ============================================================
 
 async function executeStep7(state) {
+  if (await maybeSkipStep7IfConsentReady()) {
+    return;
+  }
+
   const mailPollConfig = getMailPollConfig(state);
   const pollPayload = {
     filterAfterTimestamp: state.lastEmailTimestamp || state.flowStartTime || 0,
