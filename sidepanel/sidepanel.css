@@ -467,6 +467,45 @@ header {
   color: var(--text-secondary);
 }
 
+.icloud-toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.icloud-search {
+  flex: 1.35;
+  min-width: 0;
+}
+
+.icloud-filter {
+  flex: 0.9;
+  min-width: 112px;
+}
+
+.icloud-bulkbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-base);
+}
+
+.icloud-select-all {
+  flex-shrink: 0;
+}
+
+.icloud-bulk-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
 .icloud-list {
   display: flex;
   flex-direction: column;
@@ -483,6 +522,14 @@ header {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   background: var(--bg-base);
+}
+
+.icloud-item-check {
+  margin-top: 2px;
+  width: 15px;
+  height: 15px;
+  accent-color: var(--blue);
+  flex-shrink: 0;
 }
 
 .icloud-item-main {

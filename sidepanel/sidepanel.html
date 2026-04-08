@@ -138,6 +138,29 @@
         </div>
         <button id="btn-icloud-login-done" class="btn btn-primary btn-xs" type="button" data-i18n="btnIcloudLoginDone">I've Signed In</button>
       </div>
+      <div class="icloud-toolbar">
+        <input id="input-icloud-search" class="data-input icloud-search" type="text" placeholder="Search alias / label / note" data-i18n-placeholder="placeholderIcloudSearch" />
+        <select id="select-icloud-filter" class="data-select icloud-filter">
+          <option value="all" data-i18n="icloudFilterAll">All</option>
+          <option value="active" data-i18n="icloudFilterActive">Active</option>
+          <option value="used" data-i18n="icloudFilterUsed">Used</option>
+          <option value="unused" data-i18n="icloudFilterUnused">Unused</option>
+          <option value="preserved" data-i18n="icloudFilterPreserved">Preserved</option>
+        </select>
+      </div>
+      <div class="icloud-bulkbar">
+        <label class="option-toggle icloud-select-all" for="checkbox-icloud-select-all">
+          <input type="checkbox" id="checkbox-icloud-select-all" />
+          <span id="icloud-selection-summary">0 selected</span>
+        </label>
+        <div class="icloud-bulk-actions">
+          <button id="btn-icloud-bulk-used" class="btn btn-outline btn-xs" type="button" data-i18n="btnMarkUsed">Mark Used</button>
+          <button id="btn-icloud-bulk-unused" class="btn btn-outline btn-xs" type="button" data-i18n="btnMarkUnused">Mark Unused</button>
+          <button id="btn-icloud-bulk-preserve" class="btn btn-outline btn-xs" type="button" data-i18n="btnPreserve">Preserve</button>
+          <button id="btn-icloud-bulk-unpreserve" class="btn btn-outline btn-xs" type="button" data-i18n="btnUnpreserve">Unpreserve</button>
+          <button id="btn-icloud-bulk-delete" class="btn btn-outline btn-xs" type="button" data-i18n="btnDelete">Delete</button>
+        </div>
+      </div>
       <div id="icloud-list" class="icloud-list"></div>
     </div>
   </section>

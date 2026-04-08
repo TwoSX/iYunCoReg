@@ -14,8 +14,10 @@ const ICLOUD_LOGIN_URLS = [
 const STOP_ERROR_MESSAGE = 'Flow stopped by user.';
 const HUMAN_STEP_DELAY_MIN = 700;
 const HUMAN_STEP_DELAY_MAX = 2200;
+const PERSISTENT_ALIAS_STATE_KEYS = ['accounts', 'manualAliasUsage', 'preservedAliases'];
 
 initializeSessionStorageAccess();
+initializePersistentAliasState();
 
 // ============================================================
 // State Management (chrome.storage.session)
@@ -52,8 +54,11 @@ const DEFAULT_STATE = {
 };
 
 async function getState() {
-  const state = await chrome.storage.session.get(null);
-  return { ...DEFAULT_STATE, ...state };
+  const [sessionState, persistentState] = await Promise.all([
+    chrome.storage.session.get(null),
+    getPersistentAliasState(),
+  ]);
+  return { ...DEFAULT_STATE, ...sessionState, ...persistentState };
 }
 
 async function initializeSessionStorageAccess() {
@@ -72,6 +77,75 @@ async function initializeSessionStorageAccess() {
 async function setState(updates) {
   console.log(LOG_PREFIX, 'storage.set:', JSON.stringify(updates).slice(0, 200));
   await chrome.storage.session.set(updates);
+  const persistentUpdates = pickPersistentAliasUpdates(updates);
+  if (Object.keys(persistentUpdates).length > 0) {
+    await chrome.storage.local.set(persistentUpdates);
+  }
+}
+
+async function getPersistentAliasState() {
+  try {
+    const state = await chrome.storage.local.get(PERSISTENT_ALIAS_STATE_KEYS);
+    return {
+      accounts: Array.isArray(state.accounts) ? state.accounts : DEFAULT_STATE.accounts,
+      manualAliasUsage: state.manualAliasUsage && typeof state.manualAliasUsage === 'object'
+        ? state.manualAliasUsage
+        : DEFAULT_STATE.manualAliasUsage,
+      preservedAliases: state.preservedAliases && typeof state.preservedAliases === 'object'
+        ? state.preservedAliases
+        : DEFAULT_STATE.preservedAliases,
+    };
+  } catch (err) {
+    console.warn(LOG_PREFIX, 'Failed to read persistent alias state:', err?.message || err);
+    return {
+      accounts: DEFAULT_STATE.accounts,
+      manualAliasUsage: DEFAULT_STATE.manualAliasUsage,
+      preservedAliases: DEFAULT_STATE.preservedAliases,
+    };
+  }
+}
+
+function pickPersistentAliasUpdates(updates = {}) {
+  const picked = {};
+  for (const key of PERSISTENT_ALIAS_STATE_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(updates, key)) {
+      picked[key] = updates[key];
+    }
+  }
+  return picked;
+}
+
+async function initializePersistentAliasState() {
+  try {
+    const [localState, sessionState] = await Promise.all([
+      chrome.storage.local.get(PERSISTENT_ALIAS_STATE_KEYS),
+      chrome.storage.session.get(PERSISTENT_ALIAS_STATE_KEYS),
+    ]);
+
+    const migrated = {};
+
+    for (const key of PERSISTENT_ALIAS_STATE_KEYS) {
+      const localValue = localState[key];
+      const sessionValue = sessionState[key];
+      const localMissing = localValue === undefined
+        || (Array.isArray(localValue) && localValue.length === 0)
+        || (!Array.isArray(localValue) && typeof localValue === 'object' && localValue && Object.keys(localValue).length === 0);
+      const sessionHasValue = sessionValue !== undefined
+        && (!(Array.isArray(sessionValue)) || sessionValue.length > 0)
+        && (!(typeof sessionValue === 'object' && sessionValue) || Array.isArray(sessionValue) || Object.keys(sessionValue).length > 0);
+
+      if (localMissing && sessionHasValue) {
+        migrated[key] = sessionValue;
+      }
+    }
+
+    if (Object.keys(migrated).length > 0) {
+      await chrome.storage.local.set(migrated);
+      console.log(LOG_PREFIX, 'Migrated alias state from session to local:', Object.keys(migrated));
+    }
+  } catch (err) {
+    console.warn(LOG_PREFIX, 'Failed to initialize persistent alias state:', err?.message || err);
+  }
 }
 
 function broadcastDataUpdate(payload) {
@@ -615,29 +689,33 @@ async function fetchConfiguredEmail(options = {}) {
 async function resetState() {
   console.log(LOG_PREFIX, 'Resetting all state');
   // Preserve settings and persistent data across resets
-  const prev = await chrome.storage.session.get([
-    'seenCodes',
-    'seenInbucketMailIds',
-    'accounts',
-    'manualAliasUsage',
-    'preservedAliases',
-    'tabRegistry',
-    'language',
-    'vpsUrl',
-    'autoDeleteUsedIcloudAlias',
-    'customPassword',
-    'mailProvider',
-    'inbucketHost',
-    'inbucketMailbox',
+  const [prev, persistentAliasState] = await Promise.all([
+    chrome.storage.session.get([
+      'seenCodes',
+      'seenInbucketMailIds',
+      'tabRegistry',
+      'language',
+      'vpsUrl',
+      'autoDeleteUsedIcloudAlias',
+      'customPassword',
+      'mailProvider',
+      'inbucketHost',
+      'inbucketMailbox',
+    ]),
+    getPersistentAliasState(),
   ]);
   await chrome.storage.session.clear();
   await chrome.storage.session.set({
     ...DEFAULT_STATE,
     seenCodes: prev.seenCodes || [],
     seenInbucketMailIds: prev.seenInbucketMailIds || [],
-    accounts: prev.accounts || [],
-    manualAliasUsage: prev.manualAliasUsage && typeof prev.manualAliasUsage === 'object' ? prev.manualAliasUsage : {},
-    preservedAliases: prev.preservedAliases && typeof prev.preservedAliases === 'object' ? prev.preservedAliases : {},
+    accounts: persistentAliasState.accounts || [],
+    manualAliasUsage: persistentAliasState.manualAliasUsage && typeof persistentAliasState.manualAliasUsage === 'object'
+      ? persistentAliasState.manualAliasUsage
+      : {},
+    preservedAliases: persistentAliasState.preservedAliases && typeof persistentAliasState.preservedAliases === 'object'
+      ? persistentAliasState.preservedAliases
+      : {},
     tabRegistry: prev.tabRegistry || {},
     language: prev.language || 'zh-CN',
     vpsUrl: prev.vpsUrl || '',
